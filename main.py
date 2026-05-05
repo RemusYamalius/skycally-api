@@ -154,7 +154,7 @@ async def word_to_pdf(file: UploadFile = File(...)):
 
         result = subprocess.run([
             "libreoffice",
-            f"-env:UserInstallation=file://{lo_profile}",
+            f"-env:UserInstallation=file:///{lo_profile}",
             "--headless",
             "--norestore",
             "--nofirststartwizard",
@@ -209,7 +209,7 @@ async def pdf_to_word(file: UploadFile = File(...)):
 
         result = subprocess.run([
             "libreoffice",
-            f"-env:UserInstallation=file://{lo_profile}",
+           f"-env:UserInstallation=file:///{lo_profile}",
             "--headless",
             "--norestore",
             "--nofirststartwizard",
