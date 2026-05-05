@@ -1,11 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 import yt_dlp
 import subprocess
 import tempfile
 import os
-import httpx
+import shutil
 
 app = FastAPI()
 
@@ -52,100 +52,101 @@ async def video_info(url: str):
 
 @app.get("/api/download")
 async def download_video(url: str, quality: str = "1080"):
-    ydl_opts = {
-        "quiet": True,
-        "noplaylist": True,
-        "format": f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best",
-    }
+    tmp_dir = tempfile.mkdtemp()
     try:
+        output_template = os.path.join(tmp_dir, "video.%(ext)s")
+        ydl_opts = {
+            "quiet": True,
+            "noplaylist": True,
+            "format": f"bestvideo[height<={quality}]+bestaudio/best",
+            "outtmpl": output_template,
+            "merge_output_format": "mp4",
+            "postprocessors": [{
+                "key": "FFmpegVideoConvertor",
+                "preferedformat": "mp4",
+            }],
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = ydl.extract_info(url, download=True)
             title = info.get("title", "video")[:50]
 
-            if "url" in info:
-                video_url = info["url"]
-                http_headers = info.get("http_headers", {})
-            elif "formats" in info:
-                fmt = info["formats"][-1]
-                video_url = fmt["url"]
-                http_headers = fmt.get("http_headers", {})
-            else:
-                raise HTTPException(status_code=400, detail="No URL found")
+        mp4_files = [f for f in os.listdir(tmp_dir) if f.endswith(".mp4")]
+        if not mp4_files:
+            raise HTTPException(status_code=500, detail="Video file not created")
+
+        final_path = os.path.join(tmp_dir, mp4_files[0])
+        with open(final_path, "rb") as f:
+            content = f.read()
 
         safe_title = "".join(
             c for c in title if c.isalnum() or c in " -_"
         ).strip() or "video"
 
-        async def stream():
-            async with httpx.AsyncClient(follow_redirects=True) as client:
-                async with client.stream(
-                    "GET",
-                    video_url,
-                    headers={
-                        **http_headers,
-                        "User-Agent": "Mozilla/5.0",
-                        "Referer": "https://www.tiktok.com/",
-                    },
-                    timeout=120,
-                ) as r:
-                    async for chunk in r.aiter_bytes(chunk_size=65536):
-                        yield chunk
-
-        return StreamingResponse(
-            stream(),
+        return Response(
+            content=content,
             media_type="video/mp4",
             headers={
                 "Content-Disposition": f'attachment; filename="{safe_title}.mp4"',
                 "Cache-Control": "no-cache",
-            },
+            }
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 @app.post("/api/word-to-pdf")
 async def word_to_pdf(file: UploadFile = File(...)):
     if not file.filename.endswith((".doc", ".docx")):
         raise HTTPException(status_code=400, detail="Only .doc/.docx allowed")
     tmp_dir = tempfile.mkdtemp()
-    input_path = os.path.join(tmp_dir, file.filename)
-    with open(input_path, "wb") as f:
-        f.write(await file.read())
-    result = subprocess.run([
-        "libreoffice", "--headless", "--convert-to", "pdf",
-        "--outdir", tmp_dir, input_path
-    ], capture_output=True, timeout=60)
-    if result.returncode != 0:
-        raise HTTPException(status_code=500, detail="Conversion failed")
-    pdf_filename = file.filename.rsplit(".", 1)[0] + ".pdf"
-    pdf_path = os.path.join(tmp_dir, pdf_filename)
-    with open(pdf_path, "rb") as f:
-        content = f.read()
-    return Response(
-        content=content,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={pdf_filename}"}
-    )
+    try:
+        input_path = os.path.join(tmp_dir, file.filename)
+        with open(input_path, "wb") as f:
+            f.write(await file.read())
+        result = subprocess.run([
+            "libreoffice", "--headless", "--convert-to", "pdf",
+            "--outdir", tmp_dir, input_path
+        ], capture_output=True, timeout=60)
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail="Conversion failed")
+        pdf_filename = file.filename.rsplit(".", 1)[0] + ".pdf"
+        pdf_path = os.path.join(tmp_dir, pdf_filename)
+        with open(pdf_path, "rb") as f:
+            content = f.read()
+        return Response(
+            content=content,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={pdf_filename}"}
+        )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 @app.post("/api/pdf-to-word")
 async def pdf_to_word(file: UploadFile = File(...)):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only .pdf allowed")
     tmp_dir = tempfile.mkdtemp()
-    input_path = os.path.join(tmp_dir, file.filename)
-    with open(input_path, "wb") as f:
-        f.write(await file.read())
-    result = subprocess.run([
-        "libreoffice", "--headless", "--convert-to", "docx",
-        "--outdir", tmp_dir, input_path
-    ], capture_output=True, timeout=60)
-    if result.returncode != 0:
-        raise HTTPException(status_code=500, detail="Conversion failed")
-    docx_filename = file.filename.replace(".pdf", ".docx")
-    docx_path = os.path.join(tmp_dir, docx_filename)
-    with open(docx_path, "rb") as f:
-        content = f.read()
-    return Response(
-        content=content,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f"attachment; filename={docx_filename}"}
-    )
+    try:
+        input_path = os.path.join(tmp_dir, file.filename)
+        with open(input_path, "wb") as f:
+            f.write(await file.read())
+        result = subprocess.run([
+            "libreoffice", "--headless", "--convert-to", "docx",
+            "--outdir", tmp_dir, input_path
+        ], capture_output=True, timeout=60)
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail="Conversion failed")
+        docx_filename = file.filename.replace(".pdf", ".docx")
+        docx_path = os.path.join(tmp_dir, docx_filename)
+        with open(docx_path, "rb") as f:
+            content = f.read()
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f"attachment; filename={docx_filename}"}
+        )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
