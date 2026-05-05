@@ -54,27 +54,63 @@ async def video_info(url: str):
 async def download_video(url: str, quality: str = "1080"):
     tmp_dir = tempfile.mkdtemp()
     try:
+        # تأكد أن quality رقم صحيح
+        try:
+            quality_int = int(quality)
+        except ValueError:
+            quality_int = 1080
+
         output_template = os.path.join(tmp_dir, "video.%(ext)s")
+
         ydl_opts = {
             "quiet": True,
             "noplaylist": True,
-            "format": f"bestvideo[height<={quality}][vcodec^=avc]+bestaudio/best[height<={quality}]/best",
             "outtmpl": output_template,
             "merge_output_format": "mp4",
-            "postprocessors": [{
-                "key": "FFmpegVideoConvertor",
-                "preferedformat": "mp4",
-            }],
+            # جلب أفضل جودة مع تفضيل h264
+            "format": (
+                f"bestvideo[height<={quality_int}][vcodec^=avc1]+bestaudio/"
+                f"bestvideo[height<={quality_int}]+bestaudio/"
+                f"best[height<={quality_int}]/"
+                f"best"
+            ),
+            "postprocessors": [
+                {
+                    # تحويل إجباري لـ H264 عبر ffmpeg
+                    "key": "FFmpegVideoRemuxer",
+                    "preferedformat": "mp4",
+                },
+                {
+                    "key": "FFmpegMetadataPP",
+                },
+            ],
+            "postprocessor_args": {
+                "ffmpeg": [
+                    "-vcodec", "libx264",
+                    "-acodec", "aac",
+                    "-preset", "fast",
+                    "-crf", "23",
+                ],
+            },
         }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             title = info.get("title", "video")[:50]
 
-        mp4_files = [f for f in os.listdir(tmp_dir) if f.endswith(".mp4")]
+        # ابحث عن الملف
+        all_files = os.listdir(tmp_dir)
+        mp4_files = [f for f in all_files if f.endswith(".mp4")]
+
         if not mp4_files:
-            raise HTTPException(status_code=500, detail="Video file not created")
+            # جرب أي ملف فيديو
+            video_files = [f for f in all_files if not f.endswith(".part")]
+            if not video_files:
+                raise HTTPException(status_code=500, detail="No file created")
+            mp4_files = video_files
 
         final_path = os.path.join(tmp_dir, mp4_files[0])
+
         with open(final_path, "rb") as f:
             content = f.read()
 
