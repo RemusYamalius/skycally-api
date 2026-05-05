@@ -1,10 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 import yt_dlp
 import subprocess
 import tempfile
 import os
+import httpx
 
 app = FastAPI()
 
@@ -14,32 +15,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-@app.get("/api/download")
-async def download_video(url: str, video_url: str):
-    import httpx
-    from fastapi.responses import StreamingResponse
-    
-    ydl_opts = {"quiet": True}
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        title = info.get("title", "video")[:50]
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://www.tiktok.com/",
-    }
-    
-    async def stream():
-        async with httpx.AsyncClient() as client:
-            async with client.stream("GET", video_url, headers=headers, timeout=60) as r:
-                async for chunk in r.aiter_bytes(chunk_size=8192):
-                    yield chunk
-    
-    return StreamingResponse(
-        stream(),
-        media_type="video/mp4",
-        headers={"Content-Disposition": f"attachment; filename={title}.mp4"}
-    )
+
 @app.get("/")
 def root():
     return {"status": "ok", "service": "skycally-api"}
@@ -71,6 +47,58 @@ async def video_info(url: str):
                 "thumbnail": info.get("thumbnail", ""),
                 "formats": formats[-8:],
             }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/download")
+async def download_video(url: str, quality: str = "1080"):
+    ydl_opts = {
+        "quiet": True,
+        "noplaylist": True,
+        "format": f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best",
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            title = info.get("title", "video")[:50]
+
+            if "url" in info:
+                video_url = info["url"]
+                http_headers = info.get("http_headers", {})
+            elif "formats" in info:
+                fmt = info["formats"][-1]
+                video_url = fmt["url"]
+                http_headers = fmt.get("http_headers", {})
+            else:
+                raise HTTPException(status_code=400, detail="No URL found")
+
+        safe_title = "".join(
+            c for c in title if c.isalnum() or c in " -_"
+        ).strip() or "video"
+
+        async def stream():
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                async with client.stream(
+                    "GET",
+                    video_url,
+                    headers={
+                        **http_headers,
+                        "User-Agent": "Mozilla/5.0",
+                        "Referer": "https://www.tiktok.com/",
+                    },
+                    timeout=120,
+                ) as r:
+                    async for chunk in r.aiter_bytes(chunk_size=65536):
+                        yield chunk
+
+        return StreamingResponse(
+            stream(),
+            media_type="video/mp4",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_title}.mp4"',
+                "Cache-Control": "no-cache",
+            },
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
