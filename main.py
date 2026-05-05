@@ -19,7 +19,6 @@ app.add_middleware(
 )
 
 def safe_filename(title: str, ext: str = "mp4") -> str:
-    # تحويل الحروف الخاصة وإزالة غير المدعوم
     normalized = unicodedata.normalize("NFKD", title)
     ascii_title = normalized.encode("ascii", "ignore").decode("ascii")
     safe = "".join(c for c in ascii_title if c.isalnum() or c in " -_").strip()
@@ -97,7 +96,6 @@ async def download_video(url: str, quality: str = "1080"):
 
         source_path = os.path.join(tmp_dir, downloaded[0])
 
-        # تحويل إجباري لـ H264
         ffmpeg_result = subprocess.run([
             "ffmpeg", "-y",
             "-i", source_path,
@@ -144,10 +142,19 @@ async def word_to_pdf(file: UploadFile = File(...)):
         with open(input_path, "wb") as f:
             f.write(content_bytes)
 
-        env = {**os.environ, "HOME": tmp_dir, "TMPDIR": tmp_dir}
+        lo_profile = os.path.join(tmp_dir, "lo_profile")
+        os.makedirs(lo_profile, exist_ok=True)
+
+        env = {
+            **os.environ,
+            "HOME": tmp_dir,
+            "TMPDIR": tmp_dir,
+            "XDG_RUNTIME_DIR": tmp_dir,
+        }
 
         result = subprocess.run([
             "libreoffice",
+            f"-env:UserInstallation=file://{lo_profile}",
             "--headless",
             "--norestore",
             "--nofirststartwizard",
@@ -190,10 +197,19 @@ async def pdf_to_word(file: UploadFile = File(...)):
         with open(input_path, "wb") as f:
             f.write(content_bytes)
 
-        env = {**os.environ, "HOME": tmp_dir, "TMPDIR": tmp_dir}
+        lo_profile = os.path.join(tmp_dir, "lo_profile")
+        os.makedirs(lo_profile, exist_ok=True)
+
+        env = {
+            **os.environ,
+            "HOME": tmp_dir,
+            "TMPDIR": tmp_dir,
+            "XDG_RUNTIME_DIR": tmp_dir,
+        }
 
         result = subprocess.run([
             "libreoffice",
+            f"-env:UserInstallation=file://{lo_profile}",
             "--headless",
             "--norestore",
             "--nofirststartwizard",
