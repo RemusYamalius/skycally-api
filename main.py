@@ -14,7 +14,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+@app.get("/api/download")
+async def download_video(url: str, video_url: str):
+    import httpx
+    from fastapi.responses import StreamingResponse
+    
+    ydl_opts = {"quiet": True}
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        title = info.get("title", "video")[:50]
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.tiktok.com/",
+    }
+    
+    async def stream():
+        async with httpx.AsyncClient() as client:
+            async with client.stream("GET", video_url, headers=headers, timeout=60) as r:
+                async for chunk in r.aiter_bytes(chunk_size=8192):
+                    yield chunk
+    
+    return StreamingResponse(
+        stream(),
+        media_type="video/mp4",
+        headers={"Content-Disposition": f"attachment; filename={title}.mp4"}
+    )
 @app.get("/")
 def root():
     return {"status": "ok", "service": "skycally-api"}
