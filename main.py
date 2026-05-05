@@ -58,7 +58,7 @@ async def download_video(url: str, quality: str = "1080"):
         ydl_opts = {
             "quiet": True,
             "noplaylist": True,
-            "format": f"bestvideo[height<={quality}]+bestaudio/best",
+            "format": f"bestvideo[height<={quality}][vcodec^=avc]+bestaudio/best[height<={quality}]/best",
             "outtmpl": output_template,
             "merge_output_format": "mp4",
             "postprocessors": [{
