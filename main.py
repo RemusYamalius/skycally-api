@@ -80,10 +80,7 @@ async def download_video(url: str, quality: str = "1080"):
                     "key": "FFmpegVideoRemuxer",
                     "preferedformat": "mp4",
                 },
-                {
-                    "key": "FFmpegMetadataPP",
-                },
-            ],
+                            ],
             "postprocessor_args": {
                 "ffmpeg": [
                     "-vcodec", "libx264",
