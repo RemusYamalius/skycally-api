@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import os
 import shutil
+import unicodedata
 
 app = FastAPI()
 
@@ -14,7 +15,15 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
+
+def safe_filename(title: str, ext: str = "mp4") -> str:
+    # تحويل الحروف الخاصة وإزالة غير المدعوم
+    normalized = unicodedata.normalize("NFKD", title)
+    ascii_title = normalized.encode("ascii", "ignore").decode("ascii")
+    safe = "".join(c for c in ascii_title if c.isalnum() or c in " -_").strip()
+    return (safe[:50] or "video") + f".{ext}"
 
 @app.get("/")
 def root():
@@ -59,30 +68,28 @@ async def download_video(url: str, quality: str = "1080"):
         except ValueError:
             quality_int = 1080
 
-        input_path = os.path.join(tmp_dir, "input.%(ext)s")
+        input_template = os.path.join(tmp_dir, "input.%(ext)s")
         output_path = os.path.join(tmp_dir, "output.mp4")
 
-        # الخطوة 1: تحميل الفيديو بأفضل جودة
         ydl_opts = {
             "quiet": True,
             "noplaylist": True,
-            "outtmpl": input_path,
+            "outtmpl": input_template,
             "format": (
                 f"bestvideo[height<={quality_int}]+bestaudio/"
-                f"best[height<={quality_int}]/"
-                f"best"
+                f"best[height<={quality_int}]/best"
             ),
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            title = info.get("title", "video")[:50]
+            title = info.get("title", "video")
 
-        # الخطوة 2: ابحث عن الملف المحمّل
         downloaded = [
             f for f in os.listdir(tmp_dir)
-            if not f.endswith(".part") and not f.endswith(".ytdl")
-            and os.path.isfile(os.path.join(tmp_dir, f))
+            if os.path.isfile(os.path.join(tmp_dir, f))
+            and not f.endswith(".part")
+            and not f.endswith(".ytdl")
         ]
 
         if not downloaded:
@@ -90,7 +97,7 @@ async def download_video(url: str, quality: str = "1080"):
 
         source_path = os.path.join(tmp_dir, downloaded[0])
 
-        # الخطوة 3: تحويل إجباري لـ H264+AAC عبر ffmpeg
+        # تحويل إجباري لـ H264
         ffmpeg_result = subprocess.run([
             "ffmpeg", "-y",
             "-i", source_path,
@@ -102,23 +109,20 @@ async def download_video(url: str, quality: str = "1080"):
             output_path
         ], capture_output=True, timeout=300)
 
-        if ffmpeg_result.returncode != 0 or not os.path.exists(output_path):
-            # إذا فشل التحويل، أرسل الملف الأصلي
-            with open(source_path, "rb") as f:
-                content = f.read()
-        else:
-            with open(output_path, "rb") as f:
-                content = f.read()
+        final_path = output_path if (
+            ffmpeg_result.returncode == 0 and os.path.exists(output_path)
+        ) else source_path
 
-        safe_title = "".join(
-            c for c in title if c.isalnum() or c in " -_"
-        ).strip() or "video"
+        with open(final_path, "rb") as f:
+            content = f.read()
+
+        filename = safe_filename(title, "mp4")
 
         return Response(
             content=content,
             media_type="video/mp4",
             headers={
-                "Content-Disposition": f'attachment; filename="{safe_title}.mp4"',
+                "Content-Disposition": f"attachment; filename=\"{filename}\"",
                 "Cache-Control": "no-cache",
             }
         )
@@ -131,86 +135,92 @@ async def download_video(url: str, quality: str = "1080"):
 
 @app.post("/api/word-to-pdf")
 async def word_to_pdf(file: UploadFile = File(...)):
-    if not file.filename.endswith((".doc", ".docx")):
+    if not file.filename.lower().endswith((".doc", ".docx")):
         raise HTTPException(status_code=400, detail="Only .doc/.docx allowed")
     tmp_dir = tempfile.mkdtemp()
     try:
-        # حفظ الملف باسم آمن بدون مسافات
-        safe_name = "input.docx"
-        input_path = os.path.join(tmp_dir, safe_name)
+        input_path = os.path.join(tmp_dir, "input.docx")
+        content_bytes = await file.read()
         with open(input_path, "wb") as f:
-            f.write(await file.read())
+            f.write(content_bytes)
+
+        env = {**os.environ, "HOME": tmp_dir, "TMPDIR": tmp_dir}
 
         result = subprocess.run([
             "libreoffice",
             "--headless",
             "--norestore",
             "--nofirststartwizard",
-            "--convert-to", "pdf",
+            "--convert-to", "pdf:writer_pdf_Export",
             "--outdir", tmp_dir,
             input_path
-        ], capture_output=True, timeout=120, env={
-            **os.environ,
-            "HOME": tmp_dir,
-        })
+        ], capture_output=True, timeout=120, env=env)
 
         pdf_path = os.path.join(tmp_dir, "input.pdf")
 
-        if result.returncode != 0 or not os.path.exists(pdf_path):
-            error_msg = result.stderr.decode()[:200]
-            raise HTTPException(status_code=500, detail=f"Conversion failed: {error_msg}")
+        if not os.path.exists(pdf_path):
+            stderr = result.stderr.decode(errors="ignore")[:300]
+            raise HTTPException(
+                status_code=500,
+                detail=f"LibreOffice failed: {stderr}"
+            )
 
         with open(pdf_path, "rb") as f:
             content = f.read()
 
-        original_name = file.filename.rsplit(".", 1)[0] + ".pdf"
+        out_name = safe_filename(
+            file.filename.rsplit(".", 1)[0], "pdf"
+        )
         return Response(
             content=content,
             media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={original_name}"}
+            headers={"Content-Disposition": f"attachment; filename=\"{out_name}\""}
         )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 @app.post("/api/pdf-to-word")
 async def pdf_to_word(file: UploadFile = File(...)):
-    if not file.filename.endswith(".pdf"):
+    if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only .pdf allowed")
     tmp_dir = tempfile.mkdtemp()
     try:
-        # حفظ الملف باسم آمن
-        safe_name = "input.pdf"
-        input_path = os.path.join(tmp_dir, safe_name)
+        input_path = os.path.join(tmp_dir, "input.pdf")
+        content_bytes = await file.read()
         with open(input_path, "wb") as f:
-            f.write(await file.read())
+            f.write(content_bytes)
+
+        env = {**os.environ, "HOME": tmp_dir, "TMPDIR": tmp_dir}
 
         result = subprocess.run([
             "libreoffice",
             "--headless",
             "--norestore",
             "--nofirststartwizard",
-            "--convert-to", "docx",
+            "--convert-to", "docx:MS Word 2007 XML",
             "--outdir", tmp_dir,
             input_path
-        ], capture_output=True, timeout=120, env={
-            **os.environ,
-            "HOME": tmp_dir,
-        })
+        ], capture_output=True, timeout=120, env=env)
 
         docx_path = os.path.join(tmp_dir, "input.docx")
 
-        if result.returncode != 0 or not os.path.exists(docx_path):
-            error_msg = result.stderr.decode()[:200]
-            raise HTTPException(status_code=500, detail=f"Conversion failed: {error_msg}")
+        if not os.path.exists(docx_path):
+            stderr = result.stderr.decode(errors="ignore")[:300]
+            raise HTTPException(
+                status_code=500,
+                detail=f"LibreOffice failed: {stderr}"
+            )
 
         with open(docx_path, "rb") as f:
             content = f.read()
 
-        original_name = file.filename.replace(".pdf", ".docx")
+        out_name = safe_filename(
+            file.filename.replace(".pdf", ""), "docx"
+        )
         return Response(
             content=content,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f"attachment; filename={original_name}"}
+            headers={"Content-Disposition": f"attachment; filename=\"{out_name}\""}
         )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
