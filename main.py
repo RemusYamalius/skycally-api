@@ -142,8 +142,9 @@ async def word_to_pdf(file: UploadFile = File(...)):
         with open(input_path, "wb") as f:
             f.write(content_bytes)
 
-        lo_profile = "/app/lo_profile_" + os.path.basename(tmp_dir)
-os.makedirs(lo_profile, exist_ok=True)
+        lo_profile = os.path.join(tmp_dir, "lo_profile")
+        os.makedirs(lo_profile, exist_ok=True)
+        os.chmod(lo_profile, 0o777)
 
         env = {
             **os.environ,
@@ -197,8 +198,9 @@ async def pdf_to_word(file: UploadFile = File(...)):
         with open(input_path, "wb") as f:
             f.write(content_bytes)
 
-lo_profile = "/app/lo_profile_" + os.path.basename(tmp_dir)
-os.makedirs(lo_profile, exist_ok=True)
+        lo_profile = os.path.join(tmp_dir, "lo_profile")
+        os.makedirs(lo_profile, exist_ok=True)
+        os.chmod(lo_profile, 0o777)
 
         env = {
             **os.environ,
@@ -209,7 +211,7 @@ os.makedirs(lo_profile, exist_ok=True)
 
         result = subprocess.run([
             "libreoffice",
-           f"-env:UserInstallation=file:///{lo_profile}",
+            f"-env:UserInstallation=file:///{lo_profile}",
             "--headless",
             "--norestore",
             "--nofirststartwizard",
