@@ -7,10 +7,6 @@ import tempfile
 import os
 import shutil
 import unicodedata
-import asyncio
-import httpx
-import base64
-from PIL import Image
 import io
 
 app = FastAPI()
@@ -136,40 +132,36 @@ async def download_video(url: str, quality: str = "1080"):
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-@app.post("/api/upscale")
-async def upscale_image(file: UploadFile = File(...), scale: int = 2):
-    api_key = os.environ.get("CLIPDROP_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="CLIPDROP_KEY_MISSING")
+@app.post("/api/remove-bg")
+async def remove_background(file: UploadFile = File(...)):
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files allowed")
+    try:
+        from rembg import remove
+        from PIL import Image
 
-    content = await file.read()
+        content = await file.read()
+        input_image = Image.open(io.BytesIO(content))
 
-    # قراءة أبعاد الصورة الأصلية
-    img = Image.open(io.BytesIO(content))
-    original_width, original_height = img.size
-    target_width = original_width * scale
-    target_height = original_height * scale
+        if input_image.mode != "RGBA":
+            input_image = input_image.convert("RGBA")
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(
-            "https://clipdrop-api.co/image-upscaling/v1/upscale",
-            headers={"x-api-key": api_key},
-            files={"image_file": (file.filename, content, file.content_type)},
-            data={
-                "target_width": str(target_width),
-                "target_height": str(target_height),
+        output_image = remove(input_image)
+
+        output_buffer = io.BytesIO()
+        output_image.save(output_buffer, format="PNG")
+        output_bytes = output_buffer.getvalue()
+
+        return Response(
+            content=output_bytes,
+            media_type="image/png",
+            headers={
+                "Content-Disposition": "attachment; filename=removed_bg.png",
+                "Cache-Control": "no-cache",
             }
         )
-
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Clipdrop error: {response.text[:200]}"
-        )
-
-    result_bytes = response.content
-    b64 = base64.b64encode(result_bytes).decode()
-    return {"output": f"data:image/png;base64,{b64}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/word-to-pdf")
 async def word_to_pdf(file: UploadFile = File(...)):
