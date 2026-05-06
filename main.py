@@ -145,7 +145,7 @@ async def upscale_image(file: UploadFile = File(...), scale: int = 2):
     async with httpx.AsyncClient(timeout=120) as client:
         # أول محاولة
         response = await client.post(
-            "https://api-inference.huggingface.co/models/caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr",
+            "https://api-inference.huggingface.co/models/eugenesiow/super-image",
             headers={"Authorization": f"Bearer {api_key}"},
             content=content,
         )
@@ -154,7 +154,7 @@ async def upscale_image(file: UploadFile = File(...), scale: int = 2):
         if response.status_code == 503:
             await asyncio.sleep(20)
             response = await client.post(
-                "https://api-inference.huggingface.co/models/caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr",
+                "https://api-inference.huggingface.co/models/eugenesiow/super-image",
                 headers={"Authorization": f"Bearer {api_key}"},
                 content=content,
             )
