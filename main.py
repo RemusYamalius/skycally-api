@@ -10,6 +10,8 @@ import unicodedata
 import asyncio
 import httpx
 import base64
+from PIL import Image
+import io
 
 app = FastAPI()
 
@@ -136,44 +138,38 @@ async def download_video(url: str, quality: str = "1080"):
 
 @app.post("/api/upscale")
 async def upscale_image(file: UploadFile = File(...), scale: int = 2):
-    api_key = os.environ.get("HF_API_KEY")
+    api_key = os.environ.get("CLIPDROP_API_KEY")
     if not api_key:
-        raise HTTPException(status_code=500, detail="HF_KEY_MISSING")
+        raise HTTPException(status_code=500, detail="CLIPDROP_KEY_MISSING")
 
     content = await file.read()
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        # أول محاولة
+    # قراءة أبعاد الصورة الأصلية
+    img = Image.open(io.BytesIO(content))
+    original_width, original_height = img.size
+    target_width = original_width * scale
+    target_height = original_height * scale
+
+    async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
-            "https://api-inference.huggingface.co/models/eugenesiow/super-image",
-            headers={"Authorization": f"Bearer {api_key}"},
-            content=content,
+            "https://clipdrop-api.co/image-upscaling/v1/upscale",
+            headers={"x-api-key": api_key},
+            files={"image_file": (file.filename, content, file.content_type)},
+            data={
+                "target_width": str(target_width),
+                "target_height": str(target_height),
+            }
         )
 
-        # إذا كان النموذج يحمّل، انتظر وأعد المحاولة
-        if response.status_code == 503:
-            await asyncio.sleep(20)
-            response = await client.post(
-                "https://api-inference.huggingface.co/models/eugenesiow/super-image",
-                headers={"Authorization": f"Bearer {api_key}"},
-                content=content,
-            )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Clipdrop error: {response.text[:200]}"
+        )
 
-        if response.status_code == 503:
-            raise HTTPException(
-                status_code=503,
-                detail="Model is loading, please try again in 30 seconds"
-            )
-
-        if not response.is_success:
-            raise HTTPException(
-                status_code=400,
-                detail=f"HuggingFace error: {response.text[:200]}"
-            )
-
-        result_bytes = response.content
-        b64 = base64.b64encode(result_bytes).decode()
-        return {"output": f"data:image/png;base64,{b64}"}
+    result_bytes = response.content
+    b64 = base64.b64encode(result_bytes).decode()
+    return {"output": f"data:image/png;base64,{b64}"}
 
 @app.post("/api/word-to-pdf")
 async def word_to_pdf(file: UploadFile = File(...)):
