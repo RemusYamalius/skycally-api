@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 import yt_dlp
@@ -129,6 +129,74 @@ async def download_video(url: str, quality: str = "1080"):
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+@app.post("/api/video-to-gif")
+async def video_to_gif(
+    file: UploadFile = File(...),
+    start: float = Form(0),
+    duration: float = Form(3),
+    width: int = Form(480),
+    fps: int = Form(15),
+):
+    # حماية من قيم خارج الحدود
+    duration = min(duration, 10)
+    fps = min(fps, 30)
+    width = min(width, 800)
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        input_path = os.path.join(tmp_dir, "input.mp4")
+        output_path = os.path.join(tmp_dir, "output.gif")
+        palette_path = os.path.join(tmp_dir, "palette.png")
+
+        content = await file.read()
+        with open(input_path, "wb") as f:
+            f.write(content)
+
+        # الخطوة 1: توليد palette لجودة ألوان أفضل
+        palette_result = subprocess.run([
+            "ffmpeg", "-y",
+            "-ss", str(start),
+            "-t", str(duration),
+            "-i", input_path,
+            "-vf", f"fps={fps},scale={width}:-1:flags=lanczos,palettegen",
+            palette_path
+        ], capture_output=True, timeout=60)
+
+        if palette_result.returncode != 0:
+            raise HTTPException(status_code=500, detail="Palette generation failed")
+
+        # الخطوة 2: توليد GIF باستخدام الـ palette
+        gif_result = subprocess.run([
+            "ffmpeg", "-y",
+            "-ss", str(start),
+            "-t", str(duration),
+            "-i", input_path,
+            "-i", palette_path,
+            "-lavfi", f"fps={fps},scale={width}:-1:flags=lanczos[x];[x][1:v]paletteuse",
+            output_path
+        ], capture_output=True, timeout=120)
+
+        if gif_result.returncode != 0 or not os.path.exists(output_path):
+            raise HTTPException(status_code=500, detail="GIF conversion failed")
+
+        with open(output_path, "rb") as f:
+            gif_bytes = f.read()
+
+        return Response(
+            content=gif_bytes,
+            media_type="image/gif",
+            headers={
+                "Content-Disposition": "attachment; filename=output.gif",
+                "Cache-Control": "no-cache",
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
