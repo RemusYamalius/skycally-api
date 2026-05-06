@@ -136,50 +136,44 @@ async def download_video(url: str, quality: str = "1080"):
 
 @app.post("/api/upscale")
 async def upscale_image(file: UploadFile = File(...), scale: int = 2):
-    api_key = os.environ.get("REPLICATE_API_KEY")
+    api_key = os.environ.get("HF_API_KEY")
     if not api_key:
-        raise HTTPException(status_code=500, detail="REPLICATE_KEY_MISSING")
+        raise HTTPException(status_code=500, detail="HF_KEY_MISSING")
 
     content = await file.read()
-    b64 = base64.b64encode(content).decode()
-    mime = file.content_type or "image/jpeg"
-    data_url = f"data:{mime};base64,{b64}"
 
     async with httpx.AsyncClient(timeout=120) as client:
-        create_res = await client.post(
-            "https://api.replicate.com/v1/models/nightmareai/real-esrgan/predictions",
-            headers={
-                "Authorization": f"Token {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "input": {
-                    "image": data_url,
-                    "scale": scale,
-                    "face_enhance": False,
-                }
-            }
+        # أول محاولة
+        response = await client.post(
+            "https://api-inference.huggingface.co/models/caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr",
+            headers={"Authorization": f"Bearer {api_key}"},
+            content=content,
         )
 
-        if not create_res.is_success:
-            raise HTTPException(status_code=400, detail=create_res.text)
-
-        prediction = create_res.json()
-        pred_id = prediction["id"]
-
-        for _ in range(30):
-            await asyncio.sleep(2)
-            poll_res = await client.get(
-                f"https://api.replicate.com/v1/predictions/{pred_id}",
-                headers={"Authorization": f"Token {api_key}"}
+        # إذا كان النموذج يحمّل، انتظر وأعد المحاولة
+        if response.status_code == 503:
+            await asyncio.sleep(20)
+            response = await client.post(
+                "https://api-inference.huggingface.co/models/caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr",
+                headers={"Authorization": f"Bearer {api_key}"},
+                content=content,
             )
-            result = poll_res.json()
-            if result["status"] == "succeeded":
-                return {"output": result["output"]}
-            if result["status"] == "failed":
-                raise HTTPException(status_code=500, detail="Upscaling failed")
 
-        raise HTTPException(status_code=408, detail="Timeout")
+        if response.status_code == 503:
+            raise HTTPException(
+                status_code=503,
+                detail="Model is loading, please try again in 30 seconds"
+            )
+
+        if not response.is_success:
+            raise HTTPException(
+                status_code=400,
+                detail=f"HuggingFace error: {response.text[:200]}"
+            )
+
+        result_bytes = response.content
+        b64 = base64.b64encode(result_bytes).decode()
+        return {"output": f"data:image/png;base64,{b64}"}
 
 @app.post("/api/word-to-pdf")
 async def word_to_pdf(file: UploadFile = File(...)):
