@@ -7,6 +7,9 @@ import tempfile
 import os
 import shutil
 import unicodedata
+import asyncio
+import httpx
+import base64
 
 app = FastAPI()
 
@@ -130,6 +133,53 @@ async def download_video(url: str, quality: str = "1080"):
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+@app.post("/api/upscale")
+async def upscale_image(file: UploadFile = File(...), scale: int = 2):
+    api_key = os.environ.get("REPLICATE_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="REPLICATE_KEY_MISSING")
+
+    content = await file.read()
+    b64 = base64.b64encode(content).decode()
+    mime = file.content_type or "image/jpeg"
+    data_url = f"data:{mime};base64,{b64}"
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        create_res = await client.post(
+            "https://api.replicate.com/v1/models/nightmareai/real-esrgan/predictions",
+            headers={
+                "Authorization": f"Token {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "input": {
+                    "image": data_url,
+                    "scale": scale,
+                    "face_enhance": False,
+                }
+            }
+        )
+
+        if not create_res.is_success:
+            raise HTTPException(status_code=400, detail=create_res.text)
+
+        prediction = create_res.json()
+        pred_id = prediction["id"]
+
+        for _ in range(30):
+            await asyncio.sleep(2)
+            poll_res = await client.get(
+                f"https://api.replicate.com/v1/predictions/{pred_id}",
+                headers={"Authorization": f"Token {api_key}"}
+            )
+            result = poll_res.json()
+            if result["status"] == "succeeded":
+                return {"output": result["output"]}
+            if result["status"] == "failed":
+                raise HTTPException(status_code=500, detail="Upscaling failed")
+
+        raise HTTPException(status_code=408, detail="Timeout")
 
 @app.post("/api/word-to-pdf")
 async def word_to_pdf(file: UploadFile = File(...)):
