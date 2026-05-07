@@ -6,9 +6,3 @@ httpx
 rembg[cpu]
 Pillow
 pypdf
-basicsr
-facexlib
-gfpgan
-realesrgan
-opencv-python-headless
-numpy

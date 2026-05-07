@@ -230,66 +230,42 @@ async def remove_background(file: UploadFile = File(...)):
 
 @app.post("/api/upscale")
 async def upscale_image(file: UploadFile = File(...), scale: int = 2):
-    tmp_dir = tempfile.mkdtemp()
     try:
-        import cv2
-        import numpy as np
-        from basicsr.archs.rrdbnet_arch import RRDBNet
-        from realesrgan import RealESRGANer
+        from PIL import Image
 
         content = await file.read()
-        nparr = np.frombuffer(content, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+        img = Image.open(io.BytesIO(content))
 
-        if img is None:
-            raise HTTPException(status_code=400, detail="Invalid image file")
+        new_width = img.width * scale
+        new_height = img.height * scale
 
-        # تحويل RGBA إلى RGB إذا لزم
-        if img.shape[-1] == 4 if len(img.shape) == 3 else False:
-            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-
-        model = RRDBNet(
-            num_in_ch=3,
-            num_out_ch=3,
-            num_feat=64,
-            num_block=23,
-            num_grow_ch=32,
-            scale=4
+        upscaled = img.resize(
+            (new_width, new_height),
+            Image.LANCZOS
         )
 
-        upsampler = RealESRGANer(
-            scale=4,
-            model_path="/app/weights/RealESRGAN_x4plus.pth",
-            model=model,
-            tile=256,
-            tile_pad=10,
-            pre_pad=0,
-            half=False,
-            device="cpu"
-        )
+        output_buffer = io.BytesIO()
+        fmt = img.format or "PNG"
 
-        output, _ = upsampler.enhance(img, outscale=scale)
-
-        output_path = os.path.join(tmp_dir, "upscaled.png")
-        cv2.imwrite(output_path, output)
-
-        with open(output_path, "rb") as f:
-            result = f.read()
+        if fmt in ("JPEG", "JPG"):
+            if upscaled.mode == "RGBA":
+                upscaled = upscaled.convert("RGB")
+            upscaled.save(output_buffer, format="JPEG", quality=95)
+            media_type = "image/jpeg"
+        else:
+            upscaled.save(output_buffer, format="PNG")
+            media_type = "image/png"
 
         return Response(
-            content=result,
-            media_type="image/png",
+            content=output_buffer.getvalue(),
+            media_type=media_type,
             headers={
                 "Content-Disposition": "attachment; filename=upscaled.png",
                 "Cache-Control": "no-cache",
             }
         )
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 @app.post("/api/word-to-pdf")
 async def word_to_pdf(file: UploadFile = File(...)):
