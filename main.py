@@ -342,3 +342,68 @@ async def pdf_to_word(file: UploadFile = File(...)):
         )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+@app.post("/api/split-pdf")
+async def split_pdf(
+    file: UploadFile = File(...),
+    pages: str = Form(...),  # مثال: "1,3,5" أو "1-3" أو "all"
+):
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only .pdf allowed")
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        from pypdf import PdfReader, PdfWriter
+
+        content_bytes = await file.read()
+        input_path = os.path.join(tmp_dir, "input.pdf")
+        with open(input_path, "wb") as f:
+            f.write(content_bytes)
+
+        reader = PdfReader(input_path)
+        total_pages = len(reader.pages)
+
+        # تحليل صفحات المطلوبة
+        selected = set()
+        for part in pages.split(","):
+            part = part.strip()
+            if "-" in part:
+                start, end = part.split("-")
+                for i in range(int(start), int(end) + 1):
+                    if 1 <= i <= total_pages:
+                        selected.add(i)
+            elif part == "all":
+                selected = set(range(1, total_pages + 1))
+                break
+            elif part.isdigit():
+                i = int(part)
+                if 1 <= i <= total_pages:
+                    selected.add(i)
+
+        if not selected:
+            raise HTTPException(status_code=400, detail="No valid pages selected")
+
+        writer = PdfWriter()
+        for i in sorted(selected):
+            writer.add_page(reader.pages[i - 1])
+
+        output_path = os.path.join(tmp_dir, "split.pdf")
+        with open(output_path, "wb") as f:
+            writer.write(f)
+
+        with open(output_path, "rb") as f:
+            content = f.read()
+
+        return Response(
+            content=content,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename=split.pdf",
+                "Cache-Control": "no-cache",
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
