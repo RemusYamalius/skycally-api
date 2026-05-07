@@ -140,7 +140,6 @@ async def video_to_gif(
     width: int = Form(480),
     fps: int = Form(15),
 ):
-    # حماية من قيم خارج الحدود
     duration = min(duration, 10)
     fps = min(fps, 30)
     width = min(width, 800)
@@ -155,7 +154,6 @@ async def video_to_gif(
         with open(input_path, "wb") as f:
             f.write(content)
 
-        # الخطوة 1: توليد palette لجودة ألوان أفضل
         palette_result = subprocess.run([
             "ffmpeg", "-y",
             "-ss", str(start),
@@ -168,7 +166,6 @@ async def video_to_gif(
         if palette_result.returncode != 0:
             raise HTTPException(status_code=500, detail="Palette generation failed")
 
-        # الخطوة 2: توليد GIF باستخدام الـ palette
         gif_result = subprocess.run([
             "ffmpeg", "-y",
             "-ss", str(start),
@@ -230,6 +227,69 @@ async def remove_background(file: UploadFile = File(...)):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/upscale")
+async def upscale_image(file: UploadFile = File(...), scale: int = 2):
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        import cv2
+        import numpy as np
+        from basicsr.archs.rrdbnet_arch import RRDBNet
+        from realesrgan import RealESRGANer
+
+        content = await file.read()
+        nparr = np.frombuffer(content, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+
+        if img is None:
+            raise HTTPException(status_code=400, detail="Invalid image file")
+
+        # تحويل RGBA إلى RGB إذا لزم
+        if img.shape[-1] == 4 if len(img.shape) == 3 else False:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+
+        model = RRDBNet(
+            num_in_ch=3,
+            num_out_ch=3,
+            num_feat=64,
+            num_block=23,
+            num_grow_ch=32,
+            scale=4
+        )
+
+        upsampler = RealESRGANer(
+            scale=4,
+            model_path="/app/weights/RealESRGAN_x4plus.pth",
+            model=model,
+            tile=256,
+            tile_pad=10,
+            pre_pad=0,
+            half=False,
+            device="cpu"
+        )
+
+        output, _ = upsampler.enhance(img, outscale=scale)
+
+        output_path = os.path.join(tmp_dir, "upscaled.png")
+        cv2.imwrite(output_path, output)
+
+        with open(output_path, "rb") as f:
+            result = f.read()
+
+        return Response(
+            content=result,
+            media_type="image/png",
+            headers={
+                "Content-Disposition": "attachment; filename=upscaled.png",
+                "Cache-Control": "no-cache",
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 @app.post("/api/word-to-pdf")
 async def word_to_pdf(file: UploadFile = File(...)):
@@ -342,10 +402,11 @@ async def pdf_to_word(file: UploadFile = File(...)):
         )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
 @app.post("/api/split-pdf")
 async def split_pdf(
     file: UploadFile = File(...),
-    pages: str = Form(...),  # مثال: "1,3,5" أو "1-3" أو "all"
+    pages: str = Form(...),
 ):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only .pdf allowed")
@@ -362,7 +423,6 @@ async def split_pdf(
         reader = PdfReader(input_path)
         total_pages = len(reader.pages)
 
-        # تحليل صفحات المطلوبة
         selected = set()
         for part in pages.split(","):
             part = part.strip()
@@ -397,7 +457,7 @@ async def split_pdf(
             content=content,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f"attachment; filename=split.pdf",
+                "Content-Disposition": "attachment; filename=split.pdf",
                 "Cache-Control": "no-cache",
             }
         )
@@ -407,10 +467,11 @@ async def split_pdf(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
 @app.post("/api/audio-convert")
 async def audio_convert(
     file: UploadFile = File(...),
-    format: str = Form(...),  # mp3, wav, ogg, aac, flac
+    format: str = Form(...),
 ):
     allowed_formats = {"mp3", "wav", "ogg", "aac", "flac"}
     if format not in allowed_formats:
@@ -463,10 +524,11 @@ async def audio_convert(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
 @app.post("/api/video-compress")
 async def video_compress(
     file: UploadFile = File(...),
-    quality: str = Form("medium"),  # low, medium, high
+    quality: str = Form("medium"),
 ):
     quality_map = {
         "low": "28",
@@ -519,10 +581,11 @@ async def video_compress(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
 @app.post("/api/extract-audio")
 async def extract_audio(
     file: UploadFile = File(...),
-    format: str = Form("mp3"),  # mp3, aac, wav
+    format: str = Form("mp3"),
 ):
     allowed_formats = ["mp3", "aac", "wav"]
     if format not in allowed_formats:
