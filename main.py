@@ -463,3 +463,59 @@ async def audio_convert(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+@app.post("/api/video-compress")
+async def video_compress(
+    file: UploadFile = File(...),
+    quality: str = Form("medium"),  # low, medium, high
+):
+    quality_map = {
+        "low": "28",
+        "medium": "23",
+        "high": "18",
+    }
+    crf = quality_map.get(quality, "23")
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        content_bytes = await file.read()
+        ext = file.filename.rsplit(".", 1)[-1].lower()
+        input_path = os.path.join(tmp_dir, f"input.{ext}")
+        output_path = os.path.join(tmp_dir, "compressed.mp4")
+
+        with open(input_path, "wb") as f:
+            f.write(content_bytes)
+
+        result = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-vcodec", "libx264",
+            "-crf", crf,
+            "-preset", "fast",
+            "-acodec", "aac",
+            "-movflags", "+faststart",
+            output_path
+        ], capture_output=True, timeout=300)
+
+        if result.returncode != 0 or not os.path.exists(output_path):
+            raise HTTPException(status_code=500, detail="Compression failed")
+
+        with open(output_path, "rb") as f:
+            content = f.read()
+
+        original_name = file.filename.rsplit(".", 1)[0]
+        out_name = safe_filename(original_name + "_compressed", "mp4")
+
+        return Response(
+            content=content,
+            media_type="video/mp4",
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{out_name}\"",
+                "Cache-Control": "no-cache",
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
