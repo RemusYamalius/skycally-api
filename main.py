@@ -519,3 +519,67 @@ async def video_compress(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+@app.post("/api/extract-audio")
+async def extract_audio(
+    file: UploadFile = File(...),
+    format: str = Form("mp3"),  # mp3, aac, wav
+):
+    allowed_formats = ["mp3", "aac", "wav"]
+    if format not in allowed_formats:
+        format = "mp3"
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        content_bytes = await file.read()
+        ext = file.filename.rsplit(".", 1)[-1].lower()
+        input_path = os.path.join(tmp_dir, f"input.{ext}")
+        output_path = os.path.join(tmp_dir, f"audio.{format}")
+
+        with open(input_path, "wb") as f:
+            f.write(content_bytes)
+
+        codec_map = {
+            "mp3": "libmp3lame",
+            "aac": "aac",
+            "wav": "pcm_s16le",
+        }
+        codec = codec_map[format]
+
+        result = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-vn",
+            "-acodec", codec,
+            "-q:a", "2",
+            output_path
+        ], capture_output=True, timeout=300)
+
+        if result.returncode != 0 or not os.path.exists(output_path):
+            raise HTTPException(status_code=500, detail="Audio extraction failed")
+
+        with open(output_path, "rb") as f:
+            content = f.read()
+
+        original_name = file.filename.rsplit(".", 1)[0]
+        out_name = safe_filename(original_name + "_audio", format)
+
+        media_types = {
+            "mp3": "audio/mpeg",
+            "aac": "audio/aac",
+            "wav": "audio/wav",
+        }
+
+        return Response(
+            content=content,
+            media_type=media_types[format],
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{out_name}\"",
+                "Cache-Control": "no-cache",
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
