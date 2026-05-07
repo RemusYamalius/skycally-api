@@ -407,3 +407,59 @@ async def split_pdf(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+@app.post("/api/audio-convert")
+async def audio_convert(
+    file: UploadFile = File(...),
+    format: str = Form(...),  # mp3, wav, ogg, aac, flac
+):
+    allowed_formats = {"mp3", "wav", "ogg", "aac", "flac"}
+    if format not in allowed_formats:
+        raise HTTPException(status_code=400, detail="Unsupported format")
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        content_bytes = await file.read()
+        ext = file.filename.rsplit(".", 1)[-1].lower()
+        input_path = os.path.join(tmp_dir, f"input.{ext}")
+        output_path = os.path.join(tmp_dir, f"output.{format}")
+
+        with open(input_path, "wb") as f:
+            f.write(content_bytes)
+
+        result = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", input_path,
+            output_path
+        ], capture_output=True, timeout=120)
+
+        if result.returncode != 0 or not os.path.exists(output_path):
+            raise HTTPException(status_code=500, detail="Conversion failed")
+
+        with open(output_path, "rb") as f:
+            content = f.read()
+
+        mime = {
+            "mp3": "audio/mpeg",
+            "wav": "audio/wav",
+            "ogg": "audio/ogg",
+            "aac": "audio/aac",
+            "flac": "audio/flac",
+        }.get(format, "audio/mpeg")
+
+        original_name = file.filename.rsplit(".", 1)[0]
+        out_name = safe_filename(original_name, format)
+
+        return Response(
+            content=content,
+            media_type=mime,
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{out_name}\"",
+                "Cache-Control": "no-cache",
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
