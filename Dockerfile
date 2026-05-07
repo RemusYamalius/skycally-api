@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     fonts-noto \
     fonts-noto-cjk \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     wget \
     --no-install-recommends \
